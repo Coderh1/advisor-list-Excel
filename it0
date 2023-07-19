@@ -1,0 +1,162 @@
+import pandas as pd
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email.utils import formatdate
+from email import encoders
+from pathlib import Path
+import os
+from datetime import datetime
+
+
+def merge_excel_files(file1_name, file2_name, merged_file_name):
+    try:
+        # Check if input files exist
+        if not os.path.isfile(file1_name):
+            raise FileNotFoundError(f"File '{file1_name}' does not exist.")
+        if file2_name and not os.path.isfile(file2_name):
+            raise FileNotFoundError(f"File '{file2_name}' does not exist.")
+
+        # Load the first Excel file into a pandas dataframe
+        df1 = pd.read_excel(file1_name)
+
+        if file2_name:
+            # Load the second Excel file into another pandas dataframe
+            df2 = pd.read_excel(file2_name)
+
+            # Drop the first 3 rows from the second dataframe
+            df2 = df2.iloc[3:]
+
+            # Concatenate the dataframes vertically
+            merged_df = pd.concat([df1, df2])
+        else:
+            # Use only the first dataframe if the second file is not provided
+            merged_df = df1
+
+        # Save the merged dataframe to a new Excel file
+        merged_df.to_excel(merged_file_name, index=False)
+        print(f"Merged file saved as '{merged_file_name}'.")
+    except FileNotFoundError as e:
+        print(f"An error occurred while merging the files: {str(e)}")
+
+
+def filter_data(input_file_name, master_key_file):
+    try:
+        # Load the merged Excel file
+        merged_df = pd.read_excel(input_file_name)
+
+        # Load the master key Excel file
+        master_key_df = pd.read_excel(master_key_file)
+
+        # Identify the correct column name for grouping
+        column_names = merged_df.columns.tolist()
+        group_column_name = None
+        for name in column_names:
+            if "3WT" in str(name):
+                group_column_name = name
+                break
+
+        if group_column_name is None:
+            raise KeyError("Could not find the column name for grouping.")
+
+        # Merge the dataframes on the identified column name
+        merged_df = pd.merge(merged_df, master_key_df, left_on=group_column_name, right_on="3WT", how="inner")
+
+        # Group the data by the identified column name
+        grouped_data = merged_df.groupby(group_column_name)
+
+        # Generate the current date and time
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        for column_header, group in grouped_data:
+            # Create the output Excel file name with the current date and time and column header
+            output_file_name = f"Advisor_{column_header}_{timestamp}.xlsx"
+
+            # Filter the group data to include only columns with data
+            filtered_group = group.loc[:, group.astype(bool).any()]
+
+            # Save the advisor's data to the output Excel file
+            filtered_group.to_excel(output_file_name, index=False)
+
+            print(f"Excel file '{output_file_name}' saved successfully.")
+
+            # Get the email addresses for the current group from the master key
+            recipients = group['Advisor Email'].str.split(';', expand=True).values.tolist()
+            cc_recipients = group['Team Email'].str.split(';', expand=True).values.tolist()
+
+            # Flatten the email addresses list
+            recipients = [email for sublist in recipients for email in sublist if pd.notnull(email)]
+            cc_recipients = [email for sublist in cc_recipients for email in sublist if pd.notnull(email)]
+
+            # Attach the Excel file to the email
+            attach_excel_to_email(output_file_name, recipients, cc_recipients)
+
+        print("Emails sent successfully.")
+    except (KeyError, FileNotFoundError) as e:
+        print(f"An error occurred while filtering data: {str(e)}")
+
+
+def attach_excel_to_email(excel_file, recipients, cc_recipients):
+    try:
+        email_sender = 'goodtimesalltimes.nathan@gmail.com'
+        email_password = 'fjpqyxdflneduhsi'
+        subject = "Email Subject TEST"
+        body = "Email Body TEST"
+
+        # Create the email message container
+        msg = MIMEMultipart()
+        msg['From'] = email_sender
+        msg['To'] = ', '.join(recipients)
+        msg['Cc'] = ', '.join(cc_recipients)
+        msg['Subject'] = subject
+        msg['Date'] = formatdate(localtime=True)
+
+        # Attach the body text to the email
+        msg.attach(MIMEText(body))
+
+        # Attach the Excel file to the email
+        with open(excel_file, 'rb') as binary_file:
+            payload = MIMEBase('application', 'octet-stream', Name=Path(excel_file).name)
+            payload.set_payload(binary_file.read())
+            encoders.encode_base64(payload)
+            payload.add_header('Content-Disposition', 'attachment', filename=Path(excel_file).name)
+            msg.attach(payload)
+
+        # Connect to the email server, login
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(email_sender, email_password)
+
+            # Send the email
+            recipients = recipients + cc_recipients
+            smtp.sendmail(email_sender, recipients, msg.as_string())
+
+            print(f"Sent email to {recipients}")
+    except Exception as e:
+        print(f"An error occurred while sending email: {str(e)}")
+
+
+def main():
+    try:
+        # Prompt the user to enter the filename for the first Excel file
+        file1_name = input("Enter the filename for the first Excel file: ")
+
+        # Prompt the user to enter the filename for the second Excel file (optional)
+        file2_name = input("Enter the filename for the second Excel file (leave blank if not applicable): ").strip()
+
+        merged_file_name = f"merged_file_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+
+        # Merge the input files
+        merge_excel_files(file1_name, file2_name, merged_file_name)
+
+        # Filter data and send emails for each group using the merged file
+        filter_data(merged_file_name, "Master_Key.xlsx")
+
+        # Delete the merged file
+        # os.remove(merged_file_name)
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+
+
+if __name__ == '__main__':
+    main()
